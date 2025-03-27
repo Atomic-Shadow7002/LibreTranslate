@@ -1,9 +1,9 @@
-# Stage 1: Builder
-FROM python:3.11-slim-bullseye AS builder
+# Stage 1: Builder with explicit Python 3.11
+FROM python:3.11.13-slim-bullseye AS builder
 
 WORKDIR /app
 
-# Install system dependencies with cache cleanup
+# 1. System dependencies
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
     pkg-config \
@@ -13,65 +13,61 @@ RUN apt-get update -qq && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create virtual environment
+# 2. Create isolated venv
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install build tools first with cache mount
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --upgrade pip wheel hatchling build setuptools
+# 3. Install build tools FIRST
+RUN pip install --no-cache-dir --upgrade "pip==24.0" "hatchling==1.24.0" "build==1.2.1"
 
-# Copy minimal required files
+# 4. Copy ONLY required build files
 COPY pyproject.toml setup.cfg ./
-COPY libretranslate/ libretranslate/
+COPY libretranslate/__init__.py libretranslate/
 COPY scripts/compile_locales.py scripts/
 
-# Install core dependencies
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir \
-    torch==2.0.1 \
+# 5. Install core deps with version pins
+RUN pip install --no-cache-dir \
+    "torch==2.0.1+cpu" \
     --extra-index-url https://download.pytorch.org/whl/cpu \
-    "numpy<2" \
-    Babel==2.12.1
+    "numpy<1.26" \
+    "Babel==2.12.1"
 
-# Compile translations
+# 6. Compile translations
 RUN python scripts/compile_locales.py
 
-# Install application with proper isolation
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir -v .
+# 7. Install application with explicit source
+RUN pip install --no-cache-dir -e .
 
 # Stage 2: Runtime
-FROM python:3.11-slim-bullseye
+FROM python:3.11.13-slim-bullseye
 
-# Railway required settings
+# Railway mandatory settings
 ENV PORT=8080
 EXPOSE 8080
 
-# Create non-root user
-RUN addgroup --system ltgroup && \
-    adduser --system --ingroup ltgroup ltuser && \
-    mkdir -p /home/ltuser/.local && \
-    chown -R ltuser:ltgroup /home/ltuser
+# Non-root user setup
+RUN addgroup --system ltgrp && \
+    adduser --system --ingroup ltgrp ltusr && \
+    mkdir -p /home/ltusr/.local && \
+    chown -R ltusr:ltgrp /home/ltusr
 
-USER ltuser
+USER ltusr
 WORKDIR /app
 
-# Copy virtual environment
-COPY --from=builder --chown=ltuser:ltgroup /opt/venv /opt/venv
+# Copy venv with proper permissions
+COPY --from=builder --chown=ltusr:ltgrp /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install models with Railway-optimized settings
-ARG WITH_MODELS=false
-ARG MODELS=""
-RUN if [ "$WITH_MODELS" = "true" ]; then \
-    python scripts/install_models.py --load_only_lang_codes "${MODELS:-en,es}"; \
+# Model installation conditional
+ARG INSTALL_MODELS=false
+ARG MODELS="en,es"
+RUN if [ "$INSTALL_MODELS" = "true" ]; then \
+    python -c "from libretranslate import main; main.load_models()" --load-only "$MODELS"; \
     fi
 
-# Runtime optimizations for Railway
-ENV LT_NUM_THREADS=2 \
+# Runtime optimizations
+ENV LT_NUM_THREADS=1 \
     LT_LOAD_ONLY=en,es \
-    LT_HOST=0.0.0.0 \
-    LT_PORT=8080
+    LT_HOST=0.0.0.0
 
-ENTRYPOINT ["libretranslate"]
+ENTRYPOINT ["libretranslate", "--host", "0.0.0.0", "--port", "8080"]
