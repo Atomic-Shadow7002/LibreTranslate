@@ -118,8 +118,8 @@ python = ["3.8", "3.9", "3.10", "3.11"]
 
 # TOOLS
 [tool.hatch.version]
-path = "VERSION"
-pattern = "^(?P<version>[0-9]*.[0-9]*.[0-9]*)$"
+source = "regex"
+path = "libretranslate/__init__.py"
 
 
 [tool.pytest.ini_options]
